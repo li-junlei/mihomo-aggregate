@@ -1,0 +1,22 @@
+# Credentials and live configuration
+.env
+.env.*
+!.env.example
+config/*
+!config/sources.example.yaml
+# Runtime data and backups
+state/
+public/
+caddy-data/
+caddy-config/
+work/
+*.log
+*.before-*
+backup*/
+__pycache__/
+*.py[cod]
+.venv/
+*.zip
+
+.private/
+release/

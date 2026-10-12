@@ -1,0 +1,44 @@
+name: mihomo-aggregate
+services:
+  worker:
+    build: .
+    image: local/mihomo-aggregate:1
+    restart: unless-stopped
+    init: true
+    volumes:
+      - ./config:/config:ro
+      - ./state:/state
+      - ./public:/public
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  panel:
+    image: local/mihomo-aggregate:1
+    command: [python, panel.py]
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PANEL_AUTH_DISABLED: ${PANEL_AUTH_DISABLED:-false}
+      SUB_PUBLIC_URL: ${SUB_PUBLIC_URL}
+    ports:
+      - "127.0.0.1:18081:8081"
+    volumes:
+      - ./config:/config
+      - ./state:/state
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  web:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    environment:
+      SUB_DOMAIN: ${SUB_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      SUB_TOKEN: ${SUB_TOKEN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./public:/srv:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    security_opt: [no-new-privileges:true]

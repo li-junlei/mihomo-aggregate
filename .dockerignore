@@ -1,0 +1,15 @@
+.env
+.env.*
+config
+backup*
+caddy-data
+caddy-config
+*.log
+*.before-*
+state
+public
+__pycache__
+*.zip
+
+.private/
+release/

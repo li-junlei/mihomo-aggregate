@@ -1,0 +1,26 @@
+public_base_url: https://sub.example.com/REPLACE_WITH_SUB_TOKEN
+rules_fetch_proxy: ""
+# Copy to sources.yaml; edit through the authenticated LAN management panel.
+health_interval: 600
+fetch_interval: 3600
+retry_interval: 900
+snapshot_max_age: 604800
+probe_urls:
+  - https://www.gstatic.com/generate_204
+  - https://cp.cloudflare.com/generate_204
+probe_timeout_ms: 5000
+probe_workers: 4
+sources:
+  - id: airport_a
+    enabled: true
+    url: https://airport-a.example.com/subscribe?token=REPLACE_ME
+    # Empty = direct. HTTP or socks5h; independent bootstrap proxy recommended.
+    fetch_proxy: ""
+    headers:
+      User-Agent: clash.meta
+  - id: airport_b
+    enabled: false
+    url: https://airport-b.example.com/subscribe?token=REPLACE_ME
+    fetch_proxy: socks5h://proxy.example.com:1080
+    headers:
+      User-Agent: clash.meta

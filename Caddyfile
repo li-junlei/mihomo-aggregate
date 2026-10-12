@@ -1,0 +1,17 @@
+{
+    email {$ACME_EMAIL}
+    admin off
+}
+{$SUB_DOMAIN} {
+    @subscription path /{$SUB_TOKEN}/clash.yaml /{$SUB_TOKEN}/rules/cn-domain.yaml /{$SUB_TOKEN}/rules/cn-ip.yaml
+    handle @subscription {
+        uri strip_prefix /{$SUB_TOKEN}
+        root * /srv
+        header Cache-Control "no-store"
+        header Content-Type "application/yaml; charset=utf-8"
+        file_server
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
