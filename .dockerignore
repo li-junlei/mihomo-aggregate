@@ -12,4 +12,5 @@ __pycache__
 *.zip
 
 .private/
+AGENTS.md
 release/

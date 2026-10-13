@@ -1,5 +1,6 @@
 import base64
 import hmac
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -56,13 +57,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/':
             self.respond(200, Path(__file__).with_name('panel.html').read_bytes(), 'text/html; charset=utf-8')
         elif self.path == '/api/config':
-            self.respond(200, json.dumps({'config': worker.load_config(),
+            with LOCK:
+                text = worker.CONFIG.read_bytes()
+            self.respond(200, json.dumps({'config': worker.validate_config(yaml.safe_load(text)),
+                                         'version': hashlib.sha256(text).hexdigest(),
+                                         'countries': sorted({n['country'] for n in worker.node_details(worker.load_config())
+                                                              if n['enabled'] and n['country'] != '🌐 其他地区'}),
                                          'subscription_url': os.environ.get('SUB_PUBLIC_URL', '')}))
         elif self.path == '/api/status':
             self.respond(200, json.dumps({'status': worker.read_json(worker.STATE / 'status.json', {}),
                                          'running': worker.read_json(worker.STATE / 'running.json', {}),
                                          'airports': {s['id']: {'subscription_info': cache.get('subscription_info'), 'cached': len(cache.get('nodes', [])), 'healthy': sum(cache.get('health', {}).values())} for s in worker.load_config()['sources'] for cache in [worker.read_json(worker.STATE / (s['id'] + '.json'), {})]},
                                          'rules': worker.read_json(worker.STATE / 'rules-status.json', {})}))
+        elif self.path == '/api/nodes':
+            self.respond(200, json.dumps({'nodes': worker.node_details(worker.load_config())}))
         else:
             self.respond(404, '{}')
 
@@ -75,27 +83,50 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 131072:
+            if not 0 < length <= worker.LIMIT:
                 raise ValueError('请求过大或为空')
             data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError('invalid request')
             with LOCK:
+                source_id, publish_only = None, False
                 if self.path == '/api/config':
-                    cfg = worker.validate_config(data)
+                    version = hashlib.sha256(worker.CONFIG.read_bytes()).hexdigest()
+                    if data.get('version') != version:
+                        self.respond(409, '{"error":"配置已被其他页面修改，请刷新页面后重试"}')
+                        return
+                    cfg = worker.validate_config(data.get('config'))
+                    old = worker.load_config()
+                    publish_only = all({k: v for k, v in s.items() if k != 'excluded_nodes'} ==
+                                       {k: v for k, v in before.items() if k != 'excluded_nodes'}
+                                       for s, before in zip(cfg['sources'], old['sources'])) and len(cfg['sources']) == len(old['sources'])
                     worker.atomic(worker.CONFIG, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
                     os.chmod(worker.CONFIG, 0o600)
-                    mode = True
+                    version = hashlib.sha256(worker.CONFIG.read_bytes()).hexdigest()
+                    mode = not publish_only
                 elif self.path == '/api/refresh':
-                    mode = bool(data.get('fetch', False))
+                    mode = data.get('fetch', False)
+                    if not isinstance(mode, bool):
+                        raise ValueError('invalid refresh mode')
+                    source_id = data.get('source_id')
+                    cfg = worker.load_config()
+                    if source_id is not None and (not isinstance(source_id, str) or not any(s['id'] == source_id and s.get('enabled', True) for s in cfg['sources'])):
+                        raise ValueError('unknown or disabled source')
                 else:
                     self.respond(404, '{}')
                     return
                 previous = worker.read_json(worker.STATE / 'refresh.request', {})
+                running = worker.read_json(worker.STATE / 'running.json', {})
                 if self.path == '/api/refresh' and time.time() - previous.get('time', 0) < 10:
                     self.respond(429, '{"error":"请稍后再试"}')
                     return
+                if self.path == '/api/refresh' and (running.get('busy') or previous.get('id') != running.get('request_id') and previous.get('id')):
+                    self.respond(409, '{"error":"后台已有任务，请等待完成后再试"}')
+                    return
                 worker.atomic(worker.STATE / 'refresh.request', json.dumps(
-                    {'id': secrets.token_hex(16), 'fetch': mode, 'time': time.time()}))
-            self.respond(200, '{"ok":true}')
+                    {'id': secrets.token_hex(16), 'fetch': mode, 'source_id': source_id,
+                     'publish_only': publish_only, 'time': time.time()}))
+            self.respond(200, json.dumps({'ok': True, **({'version': version} if self.path == '/api/config' else {})}))
         except Exception:
             self.respond(400, '{"error":"配置无效：请检查机场 ID、HTTPS 地址、代理格式和时间间隔"}')
 

@@ -10,6 +10,7 @@ public/
 caddy-data/
 caddy-config/
 work/
+output/playwright/
 *.log
 *.before-*
 backup*/
@@ -19,4 +20,5 @@ __pycache__/
 *.zip
 
 .private/
+AGENTS.md
 release/

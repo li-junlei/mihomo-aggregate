@@ -1,5 +1,13 @@
 public_base_url: https://sub.example.com/REPLACE_WITH_SUB_TOKEN
 rules_fetch_proxy: ""
+group_by_country: true
+# null: all countries; []: all nodes in Other countries; list: selected country labels
+country_groups: null
+chatgpt_group: false
+# Saved from the node manager; keyword matching is case insensitive.
+# Each rule combines source_id (optional), country, protocol and name_contains (optional).
+# At least country, protocol or name_contains is required; conditions use AND.
+exclude_rules: []
 # Copy to sources.yaml; edit through the authenticated LAN management panel.
 health_interval: 600
 fetch_interval: 3600

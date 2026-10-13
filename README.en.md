@@ -6,14 +6,17 @@
 
 Fetch subscriptions from multiple providers in the background, cache each provider independently, check node availability, and publish a stable static subscription URL. Client updates download an existing configuration rather than waiting for upstream providers.
 
+- **ChatGPT test group:** enable `chatgpt_group` in the panel to create a `ChatGPT` URL-test group probing all nodes at `https://chatgpt.com/`, selectable in `PROXY`. Defaults to `false`; a probe response does not guarantee login or chat availability.
+
 ## Features
 
 - **Independent caching:** retain the last valid nodes when an upstream request, parsing, or node configuration validation fails.
 - **Keep temporarily unavailable nodes:** health checks do not remove nodes. A validated new subscription replaces its provider's previous list.
-- **Country groups:** identify countries and regions from node names and flags, then create URL-test groups such as “🇯🇵 日本” and a global automatic selection group.
+- **Configurable country groups:** use node names and flags to create country / region test groups. Choose separate groups in a settings dialog and merge remaining nodes into Other countries, or disable grouping while keeping global AUTO.
 - **Traffic routing:** private networks, Chinese domains, and Chinese IP ranges connect directly; other traffic uses the proxy selection group. Chinese rules update periodically with a cached fallback.
-- **Visual dashboard:** water levels represent remaining traffic. Cards show quota, expiration, node availability, and data timestamps. Click a card to reveal editing and website actions.
+- **Visual dashboard:** water levels represent remaining traffic. Cards show quota, expiration, node availability, and data timestamps. Click a card to show Edit, Website, single-airport Update, and Check actions within its existing dimensions.
 - **Subscription management:** edit display names, websites, subscription URLs, fetch proxies, client headers, and enabled states in a dialog. Trigger updates or health checks manually.
+- **Node management:** safe details and last measured delays, combined filters, bulk exclusion / restoration, persistent rules, and a bounded scrolling table.
 - **Proxy fetching:** supports HTTP, HTTPS, SOCKS5, and SOCKS5H proxies.
 - **Static HTTPS delivery:** Caddy serves token-protected subscriptions and can obtain certificates automatically.
 
@@ -96,6 +99,14 @@ sources:
 ```
 
 Keep `id` stable to retain the cache association. `name` and `website` are optional. Websites are only opened in the browser, not used for fetching subscriptions. In a proxy URL, `localhost` means the container itself; use an address reachable from the container for a host or another container's proxy.
+
+Provider IDs cannot use the reserved names `status`, `running`, `published`, or `rules-status` (case insensitive). Enabled providers require a valid HTTPS subscription URL.
+
+The panel reports background failures with a timestamp and a sanitized error category. The status tooltip shows the last successful and failed runs. Saving from an outdated page returns a conflict; reload before editing again to avoid overwriting another page's changes.
+
+Missing rule files no longer stop provider fetching or node checks. The complete subscription remains unavailable until the rules have downloaded successfully, then publication resumes automatically.
+
+For direct API access, read `config` and `version` from `GET /api/config`, then submit `{"config": <edited configuration>, "version": <version read>}` to `POST /api/config`. Successful saves return the new version; outdated versions return HTTP 409. Writes still require `X-Panel-Request: 1` and authentication when enabled.
 
 ### 4. Create a portable Compose file
 
@@ -211,14 +222,60 @@ Back up `.env`, `config/`, `state/`, and Caddy data directories securely; they m
 - Country grouping uses advertised names, not exit-IP geolocation. A successful probe does not guarantee access to every website.
 - Routing requires a compatible Mihomo client with rule-provider support and access to the public rule URLs.
 
+## Panel and node management
+
+### Subscription settings
+
+Use the capsule switches on Settings to toggle country grouping and the ChatGPT test group. Open **Country settings** next to the grouping switch: it only lists regions cached in enabled subscriptions. Selected regions get separate groups; remaining nodes go into “🌐 其他国家”. All countries includes future regions; clearing every selection merges all nodes. Selected regions with no current nodes retain their settings but are hidden and create no empty groups.
+
+Choose **Apply selection**, then **Save configuration** on Settings, and refresh the client subscription. Cancel, close, or Esc discards the dialog draft. `group_by_country` defaults to `true`; `chatgpt_group` defaults to `false`. Missing or `null` `country_groups` means all regions, a list selects separate groups, and `[]` merges every region:
+
+```yaml
+group_by_country: true
+country_groups:
+  - "🇭🇰 香港"
+  - "🇯🇵 日本"
+chatgpt_group: false
+exclude_rules:
+  - source_id: airport_a
+    country: "🇯🇵 日本"
+  - country: "🇬🇧 英国"
+    protocol: vless
+```
+
+### Management API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/config` | Configuration, version, sharing URL, and available regions |
+| `POST /api/config` | Save with a version; outdated versions return 409 |
+| `GET /api/status` | Publication, airport caches, rules, and background tasks |
+| `GET /api/nodes` | Safe node details and manual / rule exclusions |
+| `POST /api/refresh` | Queue an update or check, optionally for one airport |
+
+A refresh body such as `{"fetch": true, "source_id": "airport_a"}` fetches and checks that airport. `fetch: false` only checks cached nodes; omit `source_id` for all enabled airports. Busy tasks return 409 and rapid repeats return 429. Configuration writes require the current `version` and `X-Panel-Request: 1`, plus authentication when enabled. Exclusion changes use the configuration endpoint and republish from cache.
+
+### Navigation and node management
+
+The dashboard shows airport cards and the sharing link. Update intervals and subscription options live on Settings. Node Management lists region, protocol, server address, last measured delay, and check time, with search, airport/region/protocol/status filters, and sorting. Regions come from names; delays come from the server, not the client device. Missing values are never fabricated. Node details never include passwords or private keys.
+
+Click an airport card to replace its information with Edit, Website, Update Subscription, and Check Nodes while keeping the name and card dimensions. Click the name again, another card, outside, or press Esc to close. Single-airport tasks leave other cached airports in the combined output. Disabled airports cannot submit tasks.
+
+Filters only change the view. Exclude Filtered Results saves all matching nodes, skips already excluded nodes, and keeps original caches. Restore individual nodes or use Restore Filtered Results to clear manual exclusions within the current filters; persistent rules remain active. No matching manual exclusions disables the restore button. Without filters, it excludes all remaining nodes. Empty results disable the button. Excluding every node removes the old published subscription until nodes are restored.
+
+The node table has a bounded height, internal scrolling, and a sticky header, keeping exclusion rules nearby. Persistent exclusion rules combine airport, region, protocol, and optional case-insensitive name keywords. Conditions within one rule use AND; matching any rule excludes the node, including future nodes. At least a region, protocol, or keyword is required. For example, `{source_id: airport_a, country: "🇯🇵 日本"}` excludes Japan nodes from that airport, while `{country: "🇬🇧 英国", protocol: vless}` excludes UK VLESS nodes from all airports. Existing keyword rules remain supported. Delete rules to undo rule exclusions; manual exclusions need separate restoration. Restore filtered results clears manual exclusions within the current filters; persistent rules remain in force. Manual identity follows the connection configuration through reordering or renaming; a changed endpoint or credential is a new node.
+
+Exclusions use existing configuration version checks and regenerate output from cache without fetching upstream. Clients must refresh their subscription to receive changes.
+
 ## Development and tests
 
 ```sh
 python -m pip install -r requirements.txt
 ADMIN_PASSWORD=test-password-at-least-16 python -m unittest test_worker.py test_panel.py
+node test_panel_ui.js
 ```
 
-Tests cover cache retention, node replacement, country groups, cached rules, quota parsing, display-name and website validation, and authentication modes. Live health checks require the Mihomo binary bundled in the Docker image.
+Tests cover cache retention, node replacement, selective country groups, cached rules, quota parsing, configuration versions and authentication, scoped tasks, measured delays, combined exclusions, and restoration. Node.js tests check filtering, bulk updates, and rule preservation without npm dependencies. CI runs both suites. Live health checks require the Mihomo binary bundled in the Docker image.
 
 | File | Responsibility |
 | --- | --- |
