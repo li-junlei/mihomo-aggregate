@@ -29,6 +29,51 @@ class CacheTests(unittest.TestCase):
     def status(self):
         return json.loads((worker.STATE / 'status.json').read_text())
 
+    def test_source_counts_distinguish_total_published_and_healthy(self):
+        worker.cycle(self.cfg)
+        self.cfg['sources'][0]['excluded_nodes'] = [worker.node_id(self.nodes[0])]
+        worker.cycle(self.cfg, publish_only=True)
+        self.assertEqual(self.status()['sources']['a']['cached'], 1)
+        self.assertEqual(self.status()['sources']['a']['healthy'], 1)
+        self.assertEqual(self.status()['sources']['a']['published'], 0)
+        self.assertEqual(self.status()['sources']['b']['published'], 1)
+        worker.cycle(self.cfg, publish_only=True, rules_ready=False)
+        self.assertTrue(all(s['published'] == 0 for s in self.status()['sources'].values()))
+
+    def test_rule_switch_and_unhealthy_exclusion_follow_cached_health(self):
+        worker.cycle(self.cfg)
+        self.cfg['exclude_rules'] = [{'name_contains': 'test', 'enabled': False}]
+        self.cfg['exclude_unhealthy'] = True
+        cache = worker.read_json(worker.STATE / 'a.json', {})
+        cache['health'][self.nodes[0]['name']] = False
+        worker.atomic(worker.STATE / 'a.json', json.dumps(cache))
+        worker.cycle(self.cfg, publish_only=True)
+        self.assertEqual(self.status()['published'], 1)
+        self.assertEqual(worker.node_details(self.cfg)[0]['excluded'], 'rule')
+        cache['health'] = {}
+        worker.atomic(worker.STATE / 'a.json', json.dumps(cache))
+        worker.cycle(self.cfg, publish_only=True)
+        self.assertEqual(self.status()['published'], 2, 'Unknown health must be retained')
+        cache['health'][self.nodes[0]['name']] = True
+        worker.atomic(worker.STATE / 'a.json', json.dumps(cache))
+        worker.cycle(self.cfg, publish_only=True)
+        self.assertEqual(self.status()['published'], 2, 'Recovered nodes must be restored')
+        self.cfg['exclude_rules'][0]['enabled'] = True
+        worker.cycle(self.cfg, publish_only=True)
+        self.assertEqual(self.status()['published'], 0)
+        self.cfg['exclude_rules'][0]['enabled'] = False
+        worker.cycle(self.cfg, publish_only=True)
+        self.assertEqual(self.status()['published'], 2)
+
+    def test_exclusion_switches_require_booleans(self):
+        import yaml
+        cfg = yaml.safe_load(Path('config/sources.example.yaml').read_text('utf-8'))
+        for value in (None, 1, 'false', []):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                worker.validate_config(dict(cfg, exclude_unhealthy=value))
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                worker.validate_config(dict(cfg, exclude_rules=[{'name_contains': 'test', 'enabled': value}]))
+
     def test_failure_keeps_each_airport_and_no_request_from_publish(self):
         worker.cycle(self.cfg)
         self.clock.return_value += 4000

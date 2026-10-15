@@ -14,7 +14,7 @@ Fetch subscriptions from multiple providers in the background, cache each provid
 - **Keep temporarily unavailable nodes:** health checks do not remove nodes. A validated new subscription replaces its provider's previous list.
 - **Configurable country groups:** use node names and flags to create country / region test groups. Choose separate groups in a settings dialog and merge remaining nodes into Other countries, or disable grouping while keeping global AUTO.
 - **Traffic routing:** private networks, Chinese domains, and Chinese IP ranges connect directly; other traffic uses the proxy selection group. Chinese rules update periodically with a cached fallback.
-- **Visual dashboard:** water levels represent remaining traffic. Cards show quota, expiration, node availability, and data timestamps. Click a card to show Edit, Website, single-airport Update, and Check actions within its existing dimensions.
+- **Visual dashboard:** faceted crystal branding with a midnight navy and cool teal palette. Water levels represent remaining traffic. Cards show quota, expiration, total / published / available node counts, and data timestamps, with drag sorting. Click a card to show Edit, Website, single-airport Update, and Check actions within its existing dimensions.
 - **Subscription management:** edit display names, websites, subscription URLs, fetch proxies, client headers, and enabled states in a dialog. Trigger updates or health checks manually.
 - **Node management:** safe details and last measured delays, combined filters, bulk exclusion / restoration, persistent rules, and a bounded scrolling table.
 - **Proxy fetching:** supports HTTP, HTTPS, SOCKS5, and SOCKS5H proxies.
@@ -236,11 +236,15 @@ country_groups:
   - "🇭🇰 香港"
   - "🇯🇵 日本"
 chatgpt_group: false
+# Only exclude nodes whose latest check failed; unknown nodes are retained.
+exclude_unhealthy: false
 exclude_rules:
   - source_id: airport_a
+    enabled: true # Optional; existing rules default to enabled.
     country: "🇯🇵 日本"
   - country: "🇬🇧 英国"
     protocol: vless
+    enabled: false # Paused; conditions are preserved.
 ```
 
 ### Management API
@@ -249,7 +253,7 @@ exclude_rules:
 | --- | --- |
 | `GET /api/config` | Configuration, version, sharing URL, and available regions |
 | `POST /api/config` | Save with a version; outdated versions return 409 |
-| `GET /api/status` | Publication, airport caches, rules, and background tasks |
+| `GET /api/status` | Publication, per-airport total / published / available counts, rules, and background tasks |
 | `GET /api/nodes` | Safe node details and manual / rule exclusions |
 | `POST /api/refresh` | Queue an update or check, optionally for one airport |
 
@@ -259,11 +263,21 @@ A refresh body such as `{"fetch": true, "source_id": "airport_a"}` fetches and c
 
 The dashboard shows airport cards and the sharing link. Update intervals and subscription options live on Settings. Node Management lists region, protocol, server address, last measured delay, and check time, with search, airport/region/protocol/status filters, and sorting. Regions come from names; delays come from the server, not the client device. Missing values are never fabricated. Node details never include passwords or private keys.
 
+Cards distinguish total cached nodes (including excluded nodes), nodes in the last published subscription, and nodes that passed the latest server health check. Available counts include excluded nodes that passed the check; availability is not a live measurement from your device.
+
+Drag the handle at the top right to reorder cards with a mouse or touch, or focus it and use the arrow keys. Release to save automatically; Esc cancels the drag. Saved order survives a page reload and only regenerates output without fetching or checking subscriptions.
+
 Click an airport card to replace its information with Edit, Website, Update Subscription, and Check Nodes while keeping the name and card dimensions. Click the name again, another card, outside, or press Esc to close. Single-airport tasks leave other cached airports in the combined output. Disabled airports cannot submit tasks.
 
-Filters only change the view. Exclude Filtered Results saves all matching nodes, skips already excluded nodes, and keeps original caches. Restore individual nodes or use Restore Filtered Results to clear manual exclusions within the current filters; persistent rules remain active. No matching manual exclusions disables the restore button. Without filters, it excludes all remaining nodes. Empty results disable the button. Excluding every node removes the old published subscription until nodes are restored.
+Filters only change the view. Airport, region, protocol and status support multiple selections: OR within a field, AND across fields. Status includes excluded and not excluded; use airport options marked as disabled to locate those airports. Select checkboxes to combine values. Click the heading again, click outside, or press Esc to close a filter; Clear Filters resets all selections. Exclude Filtered Results saves all matching nodes, skips already excluded nodes, and keeps original caches. Restore individual nodes or use Restore Filtered Results to clear manual exclusions within the current filters; persistent rules remain active. No matching manual exclusions disables the restore button. Without filters, it excludes all remaining nodes. Empty results disable the button. Excluding every node removes the old published subscription until nodes are restored.
 
-The node table has a bounded height, internal scrolling, and a sticky header, keeping exclusion rules nearby. Persistent exclusion rules combine airport, region, protocol, and optional case-insensitive name keywords. Conditions within one rule use AND; matching any rule excludes the node, including future nodes. At least a region, protocol, or keyword is required. For example, `{source_id: airport_a, country: "🇯🇵 日本"}` excludes Japan nodes from that airport, while `{country: "🇬🇧 英国", protocol: vless}` excludes UK VLESS nodes from all airports. Existing keyword rules remain supported. Delete rules to undo rule exclusions; manual exclusions need separate restoration. Restore filtered results clears manual exclusions within the current filters; persistent rules remain in force. Manual identity follows the connection configuration through reordering or renaming; a changed endpoint or credential is a new node.
+The node table has a bounded height, internal scrolling, and a sticky header, keeping exclusion rules nearby. Persistent exclusion rules combine airport, region, protocol, and optional case-insensitive name keywords. Conditions within one rule use AND; matching any enabled rule excludes the node, including future nodes. At least a region, protocol, or keyword is required. For example, `{source_id: airport_a, country: "🇯🇵 日本"}` excludes Japan nodes from that airport, while `{country: "🇬🇧 英国", protocol: vless}` excludes UK VLESS nodes from all airports. Existing keyword rules remain supported.
+
+Custom rules have a delete button and a switch; `enabled: false` pauses a rule while preserving its conditions. Existing rules default to enabled.
+
+The first, permanent rule excludes nodes whose latest server health check failed (`exclude_unhealthy`, disabled by default); unknown nodes are retained and recovered nodes are automatically restored, subject to other exclusions.
+
+Deleting or pausing a rule only removes that rule's exclusions. Nodes matching other enabled rules remain excluded; manual exclusions need separate restoration. Restore filtered results clears manual exclusions within the current filters; persistent rules remain in force. Manual identity follows the connection configuration through reordering or renaming; a changed endpoint or credential is a new node.
 
 Exclusions use existing configuration version checks and regenerate output from cache without fetching upstream. Clients must refresh their subscription to receive changes.
 
@@ -275,7 +289,7 @@ ADMIN_PASSWORD=test-password-at-least-16 python -m unittest test_worker.py test_
 node test_panel_ui.js
 ```
 
-Tests cover cache retention, node replacement, selective country groups, cached rules, quota parsing, configuration versions and authentication, scoped tasks, measured delays, combined exclusions, and restoration. Node.js tests check filtering, bulk updates, and rule preservation without npm dependencies. CI runs both suites. Live health checks require the Mihomo binary bundled in the Docker image.
+Tests cover cache retention, node replacement, selective country groups, cached rules, quota parsing, configuration versions and authentication, scoped tasks, measured delays, combined exclusions, and restoration. Tests also cover rule switches, failed-node exclusion and recovery, saved airport order, and per-airport publication counts. Node.js tests check multi-select filtering, bulk updates, rule preservation and sorting without npm dependencies. CI runs both suites. Live health checks require the Mihomo binary bundled in the Docker image.
 
 | File | Responsibility |
 | --- | --- |

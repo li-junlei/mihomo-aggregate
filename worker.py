@@ -323,10 +323,12 @@ def validate_config(cfg):
     if len(set(ids)) != len(ids) or any(not re.fullmatch(r'[a-zA-Z0-9_-]{1,40}', i) or i.lower() in ('status', 'running', 'published', 'rules-status') for i in ids):
         raise ValueError('invalid or duplicate source ids')
     rules = cfg.get('exclude_rules', [])
+    if not isinstance(cfg.get('exclude_unhealthy', False), bool):
+        raise ValueError('exclude_unhealthy must be boolean')
     if not isinstance(rules, list) or len(rules) > 100:
         raise ValueError('invalid exclusion rules')
     for rule in rules:
-        if (not isinstance(rule, dict) or rule.get('source_id', '') not in ['', *ids] or
+        if (not isinstance(rule, dict) or not isinstance(rule.get('enabled', True), bool) or rule.get('source_id', '') not in ['', *ids] or
                 any(not isinstance(rule.get(k, ''), str) for k in ('name_contains', 'country', 'protocol')) or
                 len(rule.get('name_contains', '')) > 200 or
                 (rule.get('country') and (len(rule['country']) > 80 or country(rule['country']) != rule['country'])) or
@@ -366,16 +368,17 @@ def node_id(node):
 
 
 def rule_matches(node, source_id, rule):
-    return (rule.get('source_id', '') in ('', source_id) and
+    return (rule.get('enabled', True) and rule.get('source_id', '') in ('', source_id) and
             (not rule.get('name_contains') or rule['name_contains'].casefold() in node['name'].split('::', 2)[-1].casefold()) and
             (not rule.get('country') or rule['country'] == country(node['name'])) and
             (not rule.get('protocol') or rule['protocol'] == node.get('type')))
 
 
-def exclusion_reason(node, source, cfg):
+def exclusion_reason(node, source, cfg, healthy=None):
     if node_id(node) in source.get('excluded_nodes', []):
         return 'manual'
-    if any(rule_matches(node, source['id'], rule) for rule in cfg.get('exclude_rules', [])):
+    if (cfg.get('exclude_unhealthy', False) and healthy is False or
+            any(rule_matches(node, source['id'], rule) for rule in cfg.get('exclude_rules', []))):
         return 'rule'
     return None
 
@@ -385,7 +388,7 @@ def node_details(cfg):
     for source in cfg['sources']:
         cache = read_json(STATE / (source['id'] + '.json'), {})
         for node in cache.get('nodes', []):
-            reason = exclusion_reason(node, source, cfg)
+            reason = exclusion_reason(node, source, cfg, cache.get('health', {}).get(node['name']))
             result.append({'id': node_id(node), 'source_id': source['id'],
                            'name': node['name'].split('::', 2)[-1], 'country': country(node['name']),
                            'type': node.get('type'), 'server': node.get('server'), 'port': node.get('port'),
@@ -450,8 +453,10 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
             good = [n for n in cache['nodes'] if cache.get('health', {}).get(n['name'])]
             error = cache.get('last_error')
         healthy.extend(good)
-        published_nodes.extend(n for n in cache['nodes'] if not exclusion_reason(n, source, cfg))
+        included = [n for n in cache['nodes'] if not exclusion_reason(n, source, cfg, cache.get('health', {}).get(n['name']))]
+        published_nodes.extend(included)
         details[sid] = {'healthy': len(good), 'cached': len(cache['nodes']),
+                        'published': len(included) if rules_ready else 0,
                         'fetch_age_seconds': int(now - cache['fetched']) if cache['fetched'] else None,
                         'fetch_or_probe_error': error,
                         'subscription_info': cache.get('subscription_info')}
@@ -463,7 +468,7 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
                                                     'max_age': cfg['snapshot_max_age']}))
         state = 'fresh' if healthy else 'retained'
     elif (rules_ready and not any(read_json(STATE / (s['id'] + '.json'), {}).get('nodes') for s in active) and
-          not cfg.get('exclude_rules') and not any(s.get('excluded_nodes') for s in active) and
+          not cfg.get('exclude_unhealthy', False) and not any(r.get('enabled', True) for r in cfg.get('exclude_rules', [])) and not any(s.get('excluded_nodes') for s in active) and
           previous.get('sources') == ids and target.exists() and
           now - previous.get('time', 0) <= cfg['snapshot_max_age']):
         state = 'stale_snapshot'

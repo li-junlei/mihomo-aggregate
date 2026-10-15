@@ -5,5 +5,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY worker.py test_worker.py panel.py panel.html ./
+COPY assets/icon-c-crystal.png ./assets/icon-c-crystal.png
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "worker.py"]

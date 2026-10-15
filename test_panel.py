@@ -35,8 +35,37 @@ class AuthTests(unittest.TestCase):
             self.assertTrue(self.handler('Basic ' + credentials).auth())
             self.assertFalse(self.handler('Basic invalid').auth())
 
+    def test_icon_requires_authentication_when_enabled(self):
+        with patch.object(panel, 'AUTH_DISABLED', False):
+            handler=self.handler()
+            handler.path='/assets/icon-c-crystal.png'
+            handler.respond=Mock()
+            handler.do_GET()
+            handler.send_response.assert_called_once_with(401)
+            handler.respond.assert_not_called()
+
 
 class ApiTests(unittest.TestCase):
+    def test_rule_switches_persist_without_refetch(self):
+        _, current = self.request('/api/config')
+        current['config']['exclude_unhealthy'] = True
+        current['config']['exclude_rules'] = [{'name_contains': 'test', 'enabled': False}]
+        code, _ = self.request('/api/config', current)
+        self.assertEqual(code, 200)
+        saved = panel.worker.load_config()
+        self.assertTrue(saved['exclude_unhealthy'])
+        self.assertFalse(saved['exclude_rules'][0]['enabled'])
+        self.assertTrue(panel.worker.read_json(panel.worker.STATE / 'refresh.request', {})['publish_only'])
+
+    def test_reorder_persists_without_fetching_sources(self):
+        _, current = self.request('/api/config')
+        expected = list(reversed(current['config']['sources']))
+        current['config']['sources'] = expected
+        code, _ = self.request('/api/config', current)
+        self.assertEqual(code, 200)
+        self.assertEqual(panel.worker.load_config()['sources'], expected)
+        self.assertTrue(panel.worker.read_json(panel.worker.STATE / 'refresh.request', {})['publish_only'])
+
     def setUp(self):
         import yaml
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TEST_TMP'))
@@ -66,6 +95,19 @@ class ApiTests(unittest.TestCase):
             handler.do_POST()
         code, body = handler.respond.call_args.args[:2]
         return code, json.loads(body)
+
+    def test_brand_icon_serves_only_selected_asset(self):
+        handler=object.__new__(panel.Handler)
+        handler.path='/assets/icon-c-crystal.png'
+        handler.headers={}
+        handler.respond=Mock()
+        handler.do_GET()
+        code,body,kind=handler.respond.call_args.args
+        self.assertEqual(code,200)
+        self.assertTrue(body.startswith(b'\x89PNG\r\n\x1a\n'))
+        self.assertEqual(kind,'image/png')
+        for path in ('/assets/../.env','/assets/icon-a-ribbon.png'):
+            self.assertEqual(self.request(path)[0],404)
 
     def test_country_choices_only_include_enabled_cached_regions(self):
         import yaml

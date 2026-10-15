@@ -7,6 +7,9 @@ chatgpt_group: false
 # Saved from the node manager; keyword matching is case insensitive.
 # Each rule combines source_id (optional), country, protocol and name_contains (optional).
 # At least country, protocol or name_contains is required; conditions use AND.
+# Exclude only nodes whose latest health check failed; unknown nodes are retained.
+exclude_unhealthy: false
+# Rules accept enabled: false to pause without deleting their conditions.
 exclude_rules: []
 # Copy to sources.yaml; edit through the authenticated LAN management panel.
 health_interval: 600

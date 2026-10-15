@@ -56,6 +56,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == '/':
             self.respond(200, Path(__file__).with_name('panel.html').read_bytes(), 'text/html; charset=utf-8')
+        elif self.path == '/assets/icon-c-crystal.png':
+            self.respond(200, (Path(__file__).parent / 'assets' / 'icon-c-crystal.png').read_bytes(), 'image/png')
         elif self.path == '/api/config':
             with LOCK:
                 text = worker.CONFIG.read_bytes()
@@ -97,9 +99,10 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     cfg = worker.validate_config(data.get('config'))
                     old = worker.load_config()
-                    publish_only = all({k: v for k, v in s.items() if k != 'excluded_nodes'} ==
-                                       {k: v for k, v in before.items() if k != 'excluded_nodes'}
-                                       for s, before in zip(cfg['sources'], old['sources'])) and len(cfg['sources']) == len(old['sources'])
+                    publish_only = {s['id']: {k: v for k, v in s.items() if k != 'excluded_nodes'}
+                                    for s in cfg['sources']} == {
+                                        s['id']: {k: v for k, v in s.items() if k != 'excluded_nodes'}
+                                        for s in old['sources']}
                     worker.atomic(worker.CONFIG, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
                     os.chmod(worker.CONFIG, 0o600)
                     version = hashlib.sha256(worker.CONFIG.read_bytes()).hexdigest()
