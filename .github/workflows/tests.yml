@@ -16,3 +16,4 @@ jobs:
         with:
           node-version: '22'
       - run: node test_panel_ui.js
+      - run: node test_panel_i18n.js

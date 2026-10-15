@@ -10,6 +10,7 @@ Fetch subscriptions from multiple providers in the background, cache each provid
 
 ## Features
 
+- **Chinese and English UI:** the panel follows your browser language on first use. Switch languages in the sidebar; your choice is saved in the current browser. Dates, regions and messages follow the selected language. Subscription node names, group names and configuration values stay unchanged.
 - **Independent caching:** retain the last valid nodes when an upstream request, parsing, or node configuration validation fails.
 - **Keep temporarily unavailable nodes:** health checks do not remove nodes. A validated new subscription replaces its provider's previous list.
 - **Configurable country groups:** use node names and flags to create country / region test groups. Choose separate groups in a settings dialog and merge remaining nodes into Other countries, or disable grouping while keeping global AUTO.

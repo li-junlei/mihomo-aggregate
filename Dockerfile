@@ -4,7 +4,7 @@ COPY --from=core /mihomo /usr/local/bin/mihomo
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY worker.py test_worker.py panel.py panel.html ./
+COPY worker.py test_worker.py panel.py panel.html panel-i18n.js ./
 COPY assets/icon-c-crystal.png ./assets/icon-c-crystal.png
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "worker.py"]

@@ -11,12 +11,17 @@ const context = vm.createContext({
   structuredClone,
   saveConfig: async next => { saved = next; },
   notice: () => {},
+  t: key => key,
+  PanelI18n: {locale: 'zh-CN'},
 });
-for (const name of ['ruleMatches', 'reason', 'selectNodes', 'setExclusions', 'reorderSource']) {
+for (const name of ['ruleMatches', 'reason', 'selectNodes', 'setExclusions', 'reorderSource', 'date', 'bytes']) {
   const line = script.split('\n').find(line => line.startsWith(`function ${name}(`) || line.startsWith(`async function ${name}(`));
   assert.ok(line, `Missing ${name}`);
   vm.runInContext(line, context);
 }
+assert.equal(context.date(null), '未提供');
+assert.equal(context.bytes(null), '未提供');
+assert.equal(context.bytes(1024), '1.00 KiB');
 const nodes = [
   {id:'1',source_id:'a',name:'Hong Kong',country:'HK',type:'ss',delay_ms:50,healthy:true,enabled:true},
   {id:'2',source_id:'a',name:'Japan',country:'JP',type:'trojan',delay_ms:null,healthy:false,enabled:true},

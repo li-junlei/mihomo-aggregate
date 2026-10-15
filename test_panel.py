@@ -46,6 +46,18 @@ class AuthTests(unittest.TestCase):
 
 
 class ApiTests(unittest.TestCase):
+    def test_translation_script_is_served(self):
+        handler = object.__new__(panel.Handler)
+        handler.path = '/panel-i18n.js'
+        handler.headers = {}
+        handler.respond = Mock()
+        handler.do_GET()
+        code, body, kind = handler.respond.call_args.args
+        self.assertEqual(code, 200)
+        self.assertEqual(body, Path('panel-i18n.js').read_bytes())
+        self.assertEqual(kind, 'text/javascript; charset=utf-8')
+        self.assertEqual(self.request('/../panel-i18n.js')[0], 404)
+
     def test_rule_switches_persist_without_refetch(self):
         _, current = self.request('/api/config')
         current['config']['exclude_unhealthy'] = True

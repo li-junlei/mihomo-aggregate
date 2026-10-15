@@ -56,6 +56,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == '/':
             self.respond(200, Path(__file__).with_name('panel.html').read_bytes(), 'text/html; charset=utf-8')
+        elif self.path == '/panel-i18n.js':
+            self.respond(200, Path(__file__).with_name('panel-i18n.js').read_bytes(), 'text/javascript; charset=utf-8')
         elif self.path == '/assets/icon-c-crystal.png':
             self.respond(200, (Path(__file__).parent / 'assets' / 'icon-c-crystal.png').read_bytes(), 'image/png')
         elif self.path == '/api/config':
