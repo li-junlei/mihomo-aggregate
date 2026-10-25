@@ -78,6 +78,48 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(panel.worker.load_config()['sources'], expected)
         self.assertTrue(panel.worker.read_json(panel.worker.STATE / 'refresh.request', {})['publish_only'])
 
+    def test_logs_api_returns_worker_and_panel_events(self):
+        self.assertEqual(self.request('/api/logs'), (200, {'entries': []}))
+        with patch('builtins.print'):
+            panel.worker.log_event('probe_progress', 'airport_a', done=10, total=20)
+            panel.worker.log_event('request_queued', 'airport_a', service='panel')
+        code, data = self.request('/api/logs')
+        self.assertEqual(code, 200)
+        self.assertEqual({e['service'] for e in data['entries']}, {'worker','panel'})
+        self.assertEqual(data['entries'][0]['done'], 10)
+        with patch.object(panel.Handler, 'auth', return_value=False):
+            handler=object.__new__(panel.Handler);handler.path='/api/logs';handler.respond=Mock()
+            handler.do_GET();handler.respond.assert_not_called()
+
+    def test_editing_one_airport_targets_only_that_airport(self):
+        _, current = self.request('/api/config')
+        source = current['config']['sources'][0]
+        source.update(url='https://example.com/replacement', enabled=True)
+        self.assertEqual(self.request('/api/config', current)[0], 200)
+        request = panel.worker.read_json(panel.worker.STATE/'refresh.request', {})
+        self.assertEqual(request['source_id'], source['id'])
+        self.assertTrue(request['fetch'])
+        self.assertFalse(request['publish_only'])
+
+    def test_file_subscription_save_replace_and_reject_invalid(self):
+        _, current = self.request('/api/config')
+        source = current['config']['sources'][0]
+        source.update(subscription_type='file', url='', file_name='nodes.yaml', yaml_content='proxies:\n- name: test\n  type: ss\n  server: example.com\n  port: 443\n  cipher: aes-128-gcm\n  password: secret\n')
+        self.assertEqual(self.request('/api/config', current)[0], 200)
+        _, saved = self.request('/api/config')
+        self.assertEqual(saved['config']['sources'][0], source)
+        self.assertEqual(panel.worker.read_json(panel.worker.STATE/'refresh.request', {})['source_id'], source['id'])
+        self.assertEqual(len(self.request('/api/nodes')[1]['nodes']), 1)
+        self.assertEqual(self.request('/api/status')[1]['airports'][source['id']]['cached'], 1)
+        self.assertTrue(panel.worker.read_json(panel.worker.STATE / 'refresh.request', {})['publish_only'])
+        saved['config']['sources'][0]['yaml_content'] = 'proxies: []'
+        before = self.config.read_bytes()
+        self.assertEqual(self.request('/api/config', saved)[0], 400)
+        self.assertEqual(self.config.read_bytes(), before)
+        saved['config']['sources'][0]['yaml_content'] = source['yaml_content'].replace('example.com', 'replacement.com')
+        self.assertEqual(self.request('/api/config', saved)[0], 200)
+        self.assertIn('replacement.com', panel.worker.load_config()['sources'][0]['yaml_content'])
+
     def setUp(self):
         import yaml
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TEST_TMP'))

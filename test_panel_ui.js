@@ -82,3 +82,24 @@ assert.equal(context.ruleMatches(uk,{name_contains:'PREMIUM',country:'🇬🇧 �
   assert.equal(context.reason(nodes[2]),'rule','Bulk restoration must preserve persistent exclusions');
   console.log('Panel filtering and batch exclusion tests passed');
 })().catch(error => { console.error(error); process.exitCode=1; });
+
+// File subscriptions retain their content when reopened and clear URL-only fields.
+const fields = Object.fromEntries(['subscriptionType','fileFields','urlFields','sourceUrl','fileInfo','sourceName','sourceId','website','proxy','ua','enabled'].map(id => [id,{value:'',checked:true}]));
+Object.assign(fields.subscriptionType,{value:'file'});
+fields.sourceUrl.value='https://example.com/private';fields.proxy.value='http://localhost:7890';
+const fileContext=vm.createContext({$:id=>fields[id],cfg:{sources:[]},editing:-1,uploadedYaml:'proxies: []',uploadedName:'nodes.yaml',t:key=>key});
+for(const name of ['subscriptionFields','draft'])vm.runInContext(script.split('\n').find(line=>line.startsWith(`function ${name}(`)),fileContext);
+fileContext.subscriptionFields();
+assert.equal(fields.sourceUrl.required,false);assert.equal(fields.urlFields.hidden,true);assert.equal(fields.fileFields.hidden,false);
+assert.equal(fileContext.draft().yaml_content,'proxies: []');assert.equal(fileContext.draft().url,'');assert.equal(fileContext.draft().fetch_proxy,'');
+fields.subscriptionType.value='url';fileContext.subscriptionFields();
+assert.equal(fields.sourceUrl.required,true);assert.equal(fields.fileFields.hidden,true);assert.equal(fileContext.draft().yaml_content,'');assert.equal(fileContext.draft().url,fields.sourceUrl.value);
+console.log('File subscription fields and draft tests passed');
+
+const messages=JSON.parse(script.match(/const logMessages=(\{[^\n]+\});/)[1]);
+const logContext=vm.createContext({cfg:{sources:[{id:'sanyuan',name:'三元店'}]},logMessages:messages,date:()=> 'now',t:(key,args={})=>key.replace(/\{(\w+)\}/g,(_,key)=>args[key])});
+vm.runInContext(script.split('\n').find(line=>line.startsWith('function logLine(')),logContext);
+assert.ok(logContext.logLine({time:1,service:'worker',source_id:'sanyuan',event:'probe_progress',done:10,total:92,healthy:7}).includes('三元店] 检测进度 10/92，可用 7'));
+assert.ok(logContext.logLine({time:1,service:'worker',event:'task_failed',error:'ValueError'}).endsWith('任务失败 · ValueError'));
+for(const key of Object.values(messages)){assert.ok(Object.hasOwn(JSON.parse(fs.readFileSync('panel-i18n.js','utf8').match(/const en = (\{[\s\S]*?\n\});/)[1]),key),key)}
+console.log('Log progress rendering and translation tests passed');

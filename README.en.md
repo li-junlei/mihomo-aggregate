@@ -6,6 +6,8 @@
 
 Fetch subscriptions from multiple providers in the background, cache each provider independently, check node availability, and publish a stable static subscription URL. Client updates download an existing configuration rather than waiting for upstream providers.
 
+- **Live logs**: The Logs page refreshes worker/panel application container logs every 2 seconds, including provider fetches, file imports, probe progress, and publication results. Pause following or refresh manually. Shows the latest 200 entries with bounded log rotation and no subscription or node credentials.
+- **File subscriptions**: Add or edit a provider using an online URL or a YAML file (up to 4 MiB, with a Clash `proxies` list). Uploaded content is stored privately; upload again to replace it. Files do not update online.
 - **ChatGPT test group:** enable `chatgpt_group` in the panel to create a `ChatGPT` URL-test group probing all nodes at `https://chatgpt.com/`, selectable in `PROXY`. Defaults to `false`; a probe response does not guarantee login or chat availability.
 
 ## Features
@@ -40,7 +42,7 @@ The `worker` fetches subscriptions, checks nodes, updates rules, and publishes f
 - For public HTTPS: a domain pointing to the deployment host and externally accessible TCP ports 80 and 443.
 - A POSIX shell and OpenSSL for initialization.
 
-The current implementation has been validated on Linux ARM64. For other architectures, check the Python and Mihomo images and validate the deployment yourself. The management interface is currently in Chinese.
+The current implementation has been validated on Linux ARM64. For other architectures, check the Python and Mihomo images and validate the deployment yourself. The management interface supports Simplified Chinese and English.
 
 ### 1. Initialize
 
@@ -225,6 +227,43 @@ Back up `.env`, `config/`, `state/`, and Caddy data directories securely; they m
 
 ## Panel and node management
 
+### Online and file subscriptions
+
+When adding or editing a provider, choose a subscription type:
+
+- **Online URL**: enter an HTTPS subscription URL, with optional fetch proxy and client headers. Existing configurations without `subscription_type` keep using this mode.
+- **Upload YAML file**: choose a `.yaml` or `.yml` file up to 4 MiB containing a nonempty native Clash `proxies` list, with at most 1000 standalone remote nodes. Saved nodes appear immediately without waiting for fetching or probes; the worker republishes the combined subscription from cache. Missing rules, disabled providers, and exclusions still affect publication.
+
+File contents are stored privately inside `config/sources.yaml`, independent of the browser or original local path. Reopening the editor retains the saved file; choosing another file replaces it. Invalid or empty node lists are rejected. Files do not update online or supply quota and expiration response headers. Importing nodes does not prove connectivity; use Check Nodes or scheduled checks to measure availability.
+
+Saving changes to one provider only updates that provider: online sources fetch and check that provider, while file sources import and republish. Other providers retain their caches. Checks using an older configuration yield to the new request; an in-flight network request may need to time out first. Update All and scheduled checks still process all enabled providers. Clients must refresh their subscriptions to receive published changes.
+
+A file source in configuration/API payloads (`yaml_content` contains data, not a path):
+
+```yaml
+- id: uploaded_airport
+  name: Uploaded provider
+  enabled: true
+  subscription_type: file
+  file_name: nodes.yaml
+  yaml_content: |
+    proxies:
+      - name: Example node
+        type: ss
+        server: proxy.example.com
+        port: 443
+        cipher: aes-128-gcm
+        password: REPLACE_ME
+```
+
+### Live logs
+
+Open Logs to view worker/panel application container events: queued requests, provider fetches or file imports, probe starts, progress after every 10 completed nodes (including the final partial batch), failure classes, publication results, and task completion. Each entry shows the time, service, and provider name.
+
+Auto-refresh and follow runs every 2 seconds. Uncheck it to pause and inspect older entries, or refresh manually. Automatic log reads stop when another page is selected or the browser page is hidden. Language switching translates event messages while preserving provider names.
+
+Events also go to container stdout and `state/worker.log` or `state/panel.log`. Each service file rotates at 1 MiB with one `.log.1` backup. The panel displays at most 200 recent entries. The API reads bounded tails of fixed files, with no arbitrary path access or Docker socket. Logs contain only event identifiers, provider IDs, counts, and exception class names; they exclude subscription URLs, node passwords, YAML contents, and raw exceptions. Docker engine diagnostics and web container access logs are outside this view.
+
 ### Subscription settings
 
 Use the capsule switches on Settings to toggle country grouping and the ChatGPT test group. Open **Country settings** next to the grouping switch: it only lists regions cached in enabled subscriptions. Selected regions get separate groups; remaining nodes go into “🌐 其他国家”. All countries includes future regions; clearing every selection merges all nodes. Selected regions with no current nodes retain their settings but are hidden and create no empty groups.
@@ -255,6 +294,7 @@ exclude_rules:
 | `GET /api/config` | Configuration, version, sharing URL, and available regions |
 | `POST /api/config` | Save with a version; outdated versions return 409 |
 | `GET /api/status` | Publication, per-airport total / published / available counts, rules, and background tasks |
+| `GET /api/logs` | Latest 200 sanitized worker/panel application events, sorted by time |
 | `GET /api/nodes` | Safe node details and manual / rule exclusions |
 | `POST /api/refresh` | Queue an update or check, optionally for one airport |
 
@@ -262,7 +302,7 @@ A refresh body such as `{"fetch": true, "source_id": "airport_a"}` fetches and c
 
 ### Navigation and node management
 
-The dashboard shows airport cards and the sharing link. Update intervals and subscription options live on Settings. Node Management lists region, protocol, server address, last measured delay, and check time, with search, airport/region/protocol/status filters, and sorting. Regions come from names; delays come from the server, not the client device. Missing values are never fabricated. Node details never include passwords or private keys.
+Navigation includes Dashboard, Nodes, Settings, and Logs. The dashboard shows airport cards and the sharing link. Update intervals and subscription options live on Settings. Node Management lists region, protocol, server address, last measured delay, and check time, with search, airport/region/protocol/status filters, and sorting. Regions come from names; delays come from the server, not the client device. Missing values are never fabricated. Node details never include passwords or private keys.
 
 Cards distinguish total cached nodes (including excluded nodes), nodes in the last published subscription, and nodes that passed the latest server health check. Available counts include excluded nodes that passed the check; availability is not a live measurement from your device.
 
@@ -288,6 +328,7 @@ Exclusions use existing configuration version checks and regenerate output from 
 python -m pip install -r requirements.txt
 ADMIN_PASSWORD=test-password-at-least-16 python -m unittest test_worker.py test_panel.py
 node test_panel_ui.js
+node test_panel_i18n.js
 ```
 
 Tests cover cache retention, node replacement, selective country groups, cached rules, quota parsing, configuration versions and authentication, scoped tasks, measured delays, combined exclusions, and restoration. Tests also cover rule switches, failed-node exclusion and recovery, saved airport order, and per-airport publication counts. Node.js tests check multi-select filtering, bulk updates, rule preservation and sorting without npm dependencies. CI runs both suites. Live health checks require the Mihomo binary bundled in the Docker image.
@@ -301,3 +342,5 @@ Tests cover cache retention, node replacement, selective country groups, cached 
 | `config/sources.example.yaml` | Provider and scheduling example |
 | `.env.example` / `setup.sh` | Environment example and initialization |
 | `test_worker.py` / `test_panel.py` | Automated tests |
+
+Automated tests also cover file subscriptions, scoped saves, yielding to new requests, immediate import and cached publication, log sanitization/rotation/limits/authentication, and progress messages. The log endpoint uses the panel authentication settings. Configuration writes have a 32 MiB request limit; other write endpoints retain the 4 MiB limit.

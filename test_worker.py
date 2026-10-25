@@ -29,6 +29,54 @@ class CacheTests(unittest.TestCase):
     def status(self):
         return json.loads((worker.STATE / 'status.json').read_text())
 
+    def test_logs_are_bounded_rotated_and_exclude_raw_secrets(self):
+        with patch('builtins.print'):
+            worker.log_event('fetch_done', 'a', count=5, url='https://private/token', password='secret', content='private YAML')
+        entry = worker.recent_logs()[0]
+        self.assertEqual(entry['count'], 5)
+        self.assertNotIn('private', json.dumps(entry))
+        self.assertNotIn('secret', json.dumps(entry))
+        path = worker.STATE/'worker.log'
+        path.write_text('x'*1024*1024, encoding='utf-8')
+        with patch('builtins.print'):
+            worker.log_event('task_done', 'a')
+        self.assertTrue((worker.STATE/'worker.log.1').exists())
+        self.assertLess(path.stat().st_size, 1024)
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write('broken partial line\n')
+            for i in range(250):
+                stream.write(json.dumps({'time':i, 'service':'worker','event':'probe_progress','done':i})+'\n')
+        entries = worker.recent_logs()
+        self.assertEqual(len(entries), 200)
+        self.assertEqual(entries[-1]['event'], 'task_done')
+
+    def test_new_request_cancels_old_cycle_before_writing_stale_nodes(self):
+        worker.atomic(worker.STATE/'refresh.request', json.dumps({'id':'new'}))
+        worker.cycle(dict(self.cfg, _request_id='old'))
+        self.fetch.assert_not_called()
+        self.assertFalse((worker.PUBLIC/'clash.yaml').exists())
+        self.assertTrue(worker.request_superseded({'_request_id':'old'}))
+        self.assertFalse(worker.request_superseded({'_request_id':'new'}))
+
+    def test_file_nodes_visible_and_published_without_fetch_or_probe(self):
+        content = 'proxies:\n- name: file node\n  type: ss\n  server: example.com\n  port: 443\n  cipher: aes-128-gcm\n  password: secret\n'
+        source = dict(id='file', enabled=True, subscription_type='file', yaml_content=content)
+        self.cfg['sources'].append(source)
+        self.assertEqual(len(worker.node_details(self.cfg)), 1)
+        worker.cycle(self.cfg, publish_only=True)
+        self.fetch.assert_not_called()
+        self.probe.assert_not_called()
+        self.assertEqual(self.status()['sources']['file']['cached'], 1)
+        self.assertEqual(self.status()['published'], 1)
+        self.assertIn('file node', (worker.PUBLIC/'clash.yaml').read_text('utf-8'))
+        cache = worker.source_cache(source)
+        cache['health'] = {cache['nodes'][0]['name']: False}
+        worker.atomic(worker.STATE/'file.json', json.dumps(cache))
+        source['yaml_content'] = content.replace('example.com', 'replacement.com')
+        self.assertIsNone(worker.node_details(self.cfg)[0]['healthy'])
+        worker.cycle(self.cfg, publish_only=True)
+        self.assertIn('replacement.com', (worker.PUBLIC/'clash.yaml').read_text('utf-8'))
+
     def test_source_counts_distinguish_total_published_and_healthy(self):
         worker.cycle(self.cfg)
         self.cfg['sources'][0]['excluded_nodes'] = [worker.node_id(self.nodes[0])]
@@ -411,16 +459,33 @@ class ProbeTests(unittest.TestCase):
         node = {'name':'a::1::Japan','type':'ss','server':'example.com','port':443}
         cfg = {'probe_urls':['https://example.com'],'probe_timeout_ms':5000,'probe_workers':1}
         with tempfile.TemporaryDirectory(dir=os.environ.get('TEST_TMP')) as tmp:
-            with patch.object(worker.tempfile, 'TemporaryDirectory') as directory, patch.object(worker.requests, 'Session', side_effect=[main,request]), patch.object(worker.subprocess, 'run', return_value=Mock(returncode=0)), patch.object(worker.subprocess, 'Popen', return_value=process):
+            with patch.object(worker.tempfile, 'TemporaryDirectory') as directory, patch.object(worker.requests, 'Session', side_effect=[main,request]), patch.object(worker.subprocess, 'run', return_value=Mock(returncode=0)), patch.object(worker.subprocess, 'Popen', return_value=process), patch.object(worker, 'log_event') as progress:
                 directory.return_value.__enter__.return_value = tmp
                 measured = {}
                 self.assertEqual(worker.probe([node], cfg, measured), [node])
                 self.assertEqual(measured, {node['name']:53})
+                progress.assert_called_once_with('probe_progress', node['name'].split('::',1)[0], done=1, total=1, healthy=1)
                 process.terminate.assert_called_once()
                 main.close.assert_called_once()
 
 
 class DisplayFieldsTests(unittest.TestCase):
+    def test_file_subscription_validation_and_fetch(self):
+        import yaml
+        cfg = yaml.safe_load(Path('config/sources.example.yaml').read_text('utf-8'))
+        source = cfg['sources'][0]
+        source.update(subscription_type='file', url='', yaml_content='proxies:\n- name: test\n  type: ss\n  server: example.com\n  port: 443\n  cipher: aes-128-gcm\n  password: secret\n')
+        worker.validate_config(cfg)
+        with patch.object(worker.requests, 'Session', side_effect=AssertionError('network used')):
+            metadata = {}
+            self.assertEqual(len(worker.fetch(source, metadata)), 1)
+            self.assertIsNone(metadata['subscription_info'])
+        for content in ('', 'proxies: []', 'proxies: [', 'proxies: [{name: bad, type: direct}]', 'x'*(worker.LIMIT+1)):
+            with self.subTest(content=content[:30]), self.assertRaises(ValueError):
+                worker.validate_config(dict(cfg, sources=[dict(source, yaml_content=content)]))
+        with self.assertRaises(ValueError):
+            worker.validate_config(dict(cfg, sources=[dict(source, subscription_type='other')]))
+
     def test_exclusion_validation(self):
         import yaml
         cfg = yaml.safe_load(Path('config/sources.example.yaml').read_text('utf-8'))

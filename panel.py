@@ -71,8 +71,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/status':
             self.respond(200, json.dumps({'status': worker.read_json(worker.STATE / 'status.json', {}),
                                          'running': worker.read_json(worker.STATE / 'running.json', {}),
-                                         'airports': {s['id']: {'subscription_info': cache.get('subscription_info'), 'cached': len(cache.get('nodes', [])), 'healthy': sum(cache.get('health', {}).values())} for s in worker.load_config()['sources'] for cache in [worker.read_json(worker.STATE / (s['id'] + '.json'), {})]},
+                                         'airports': {s['id']: {'subscription_info': cache.get('subscription_info'), 'cached': len(cache.get('nodes', [])), 'healthy': sum(cache.get('health', {}).values())} for s in worker.load_config()['sources'] for cache in [worker.source_cache(s)]},
                                          'rules': worker.read_json(worker.STATE / 'rules-status.json', {})}))
+        elif self.path == '/api/logs':
+            self.respond(200, json.dumps({'entries': worker.recent_logs()}))
         elif self.path == '/api/nodes':
             self.respond(200, json.dumps({'nodes': worker.node_details(worker.load_config())}))
         else:
@@ -87,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= worker.LIMIT:
+            if not 0 < length <= worker.LIMIT * (8 if self.path == '/api/config' else 1):
                 raise ValueError('请求过大或为空')
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
@@ -101,10 +103,15 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     cfg = worker.validate_config(data.get('config'))
                     old = worker.load_config()
-                    publish_only = {s['id']: {k: v for k, v in s.items() if k != 'excluded_nodes'}
-                                    for s in cfg['sources']} == {
-                                        s['id']: {k: v for k, v in s.items() if k != 'excluded_nodes'}
-                                        for s in old['sources']}
+                    old_sources = {s['id']: {k: v for k, v in s.items() if k != 'excluded_nodes'}
+                                   for s in old['sources']}
+                    publish_only = all(old_sources.get(s['id']) == {k: v for k, v in s.items() if k != 'excluded_nodes'}
+                                       for s in cfg['sources'] if s.get('subscription_type', 'url') == 'url')
+                    before = {s['id']: s for s in old['sources']}
+                    after = {s['id']: s for s in cfg['sources']}
+                    changed = [sid for sid in before.keys() | after.keys() if before.get(sid) != after.get(sid)]
+                    if len(changed) == 1 and changed[0] in after:
+                        source_id = changed[0]
                     worker.atomic(worker.CONFIG, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
                     os.chmod(worker.CONFIG, 0o600)
                     version = hashlib.sha256(worker.CONFIG.read_bytes()).hexdigest()
@@ -131,10 +138,12 @@ class Handler(BaseHTTPRequestHandler):
                 worker.atomic(worker.STATE / 'refresh.request', json.dumps(
                     {'id': secrets.token_hex(16), 'fetch': mode, 'source_id': source_id,
                      'publish_only': publish_only, 'time': time.time()}))
+            worker.log_event('request_queued', source_id, service='panel')
             self.respond(200, json.dumps({'ok': True, **({'version': version} if self.path == '/api/config' else {})}))
         except Exception:
             self.respond(400, '{"error":"配置无效：请检查机场 ID、HTTPS 地址、代理格式和时间间隔"}')
 
 
 if __name__ == '__main__':
+    worker.log_event('service_started', service='panel')
     ThreadingHTTPServer(('0.0.0.0', 8081), Handler).serve_forever()

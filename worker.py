@@ -10,6 +10,7 @@ import secrets
 import subprocess
 import tempfile
 import time
+import threading
 from urllib.parse import quote, urlparse
 
 import requests
@@ -19,6 +20,53 @@ STATE = Path('/state')
 PUBLIC = Path('/public')
 CONFIG = Path('/config/sources.yaml')
 LIMIT = 4 * 1024 * 1024
+
+
+_LOG_LOCK = threading.Lock()
+
+
+def log_event(event, source_id=None, service='worker', **fields):
+    entry = {'time': time.time(), 'service': service, 'event': event}
+    if source_id:
+        entry['source_id'] = source_id
+    # Only counts and exception class names may enter logs; never include raw upstream data.
+    entry.update({k: v for k, v in fields.items() if k in ('total', 'count', 'done', 'healthy', 'published', 'cached') and isinstance(v, int)})
+    if fields.get('error'):
+        entry['error'] = fields['error']
+    line = json.dumps(entry, ensure_ascii=False)
+    print(line, flush=True)
+    try:
+        with _LOG_LOCK:
+            STATE.mkdir(parents=True, exist_ok=True)
+            path = STATE / (service + '.log')
+            if path.exists() and path.stat().st_size >= 1024 * 1024:
+                os.replace(path, STATE / (service + '.log.1'))
+            with path.open('a', encoding='utf-8') as stream:
+                stream.write(line + '\n')
+            os.chmod(path, 0o600)
+    except OSError:
+        pass  # Container stdout remains available if the log mirror cannot be written.
+
+
+def recent_logs():
+    entries = []
+    for service in ('worker', 'panel'):
+        for suffix in ('.log.1', '.log'):
+            try:
+                with (STATE / (service + suffix)).open('rb') as stream:
+                    stream.seek(0, 2)
+                    stream.seek(max(0, stream.tell() - 128 * 1024))
+                    lines = stream.read().decode('utf-8', 'replace').splitlines()
+            except FileNotFoundError:
+                continue
+            for line in lines:
+                try:
+                    entry = json.loads(line)
+                    if isinstance(entry, dict) and isinstance(entry.get('time'), (int, float)):
+                        entries.append(entry)
+                except (ValueError, TypeError):
+                    continue
+    return sorted(entries, key=lambda e: e['time'])[-200:]
 
 
 def atomic(path, text):
@@ -74,6 +122,10 @@ def subscription_info(header):
 
 
 def fetch(source, metadata=None):
+    if source.get('subscription_type', 'url') == 'file':
+        if metadata is not None:
+            metadata['subscription_info'] = None
+        return parse_nodes(source['yaml_content'], source['id'])
     url = source['url']
     if urlparse(url).scheme != 'https':
         raise ValueError('upstream must use HTTPS')
@@ -217,6 +269,10 @@ def country(name):
     return '🌐 其他地区'
 
 
+def request_superseded(cfg):
+    return '_request_id' in cfg and read_json(STATE / 'refresh.request', {}).get('id') != cfg['_request_id']
+
+
 def probe(nodes, cfg, measurements=None):
     secret = secrets.token_hex(32)
     session = requests.Session()
@@ -249,6 +305,8 @@ def probe(nodes, cfg, measurements=None):
             def alive(node):
                 # Any one target succeeds; retries reduce single-target false negatives.
                 for url in cfg['probe_urls']:
+                    if request_superseded(cfg):
+                        raise InterruptedError('configuration changed')
                     try:
                         with requests.Session() as s:
                             s.trust_env = False
@@ -268,8 +326,21 @@ def probe(nodes, cfg, measurements=None):
                         pass
                 return None
 
+            completed, available = 0, 0
+            progress_lock = threading.Lock()
+
+            def measured(node):
+                nonlocal completed, available
+                result = alive(node)
+                with progress_lock:
+                    completed += 1
+                    available += result is not None
+                    if completed % 10 == 0 or completed == len(nodes):
+                        log_event('probe_progress', node['name'].split('::', 1)[0], done=completed, total=len(nodes), healthy=available)
+                return result
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg['probe_workers']) as pool:
-                return [n for n in pool.map(alive, nodes) if n is not None]
+                return [n for n in pool.map(measured, nodes) if n is not None]
         finally:
             process.terminate()
             try:
@@ -349,8 +420,19 @@ def validate_config(cfg):
             raise ValueError('官网必须为 HTTP/HTTPS 地址且不能包含账号密码')
         if not isinstance(s.get('enabled', True), bool):
             raise ValueError('enabled must be boolean')
+        kind = s.get('subscription_type', 'url')
+        if kind not in ('url', 'file'):
+            raise ValueError('订阅类型无效')
+        if kind == 'file':
+            content = s.get('yaml_content')
+            if not isinstance(content, str) or not content or len(content.encode('utf-8')) > LIMIT:
+                raise ValueError('请选择不超过 4 MiB 的 YAML 文件')
+            try:
+                parse_nodes(content, s['id'])
+            except Exception:
+                raise ValueError('YAML 文件必须包含有效的 Clash proxies 节点列表') from None
         url = s.get('url', '')
-        if not isinstance(url, str) or (s.get('enabled', True) and not url):
+        if not isinstance(url, str) or (kind == 'url' and s.get('enabled', True) and not url):
             raise ValueError('订阅地址必须使用 HTTPS')
         if url and (urlparse(url).scheme != 'https' or not urlparse(url).hostname or urlparse(url).port == 0):
             raise ValueError('订阅地址必须使用 HTTPS')
@@ -383,10 +465,25 @@ def exclusion_reason(node, source, cfg, healthy=None):
     return None
 
 
+def source_cache(source):
+    cache = read_json(STATE / (source['id'] + '.json'),
+                      {'nodes': [], 'fetched': 0, 'attempted': 0, 'unhealthy': True})
+    if source.get('subscription_type', 'url') == 'file':
+        digest = hashlib.sha256(source['yaml_content'].encode()).hexdigest()
+        if cache.get('file_hash') != digest:
+            nodes = parse_nodes(source['yaml_content'], source['id'])
+            # New file contents must not inherit health from different connections with the same name.
+            if nodes != cache.get('nodes'):
+                cache.update(health={}, delays={}, checked_at=None)
+            cache.update(nodes=nodes, fetched=time.time(), file_hash=digest,
+                         subscription_info=None, last_error=None)
+    return cache
+
+
 def node_details(cfg):
     result = []
     for source in cfg['sources']:
-        cache = read_json(STATE / (source['id'] + '.json'), {})
+        cache = source_cache(source)
         for node in cache.get('nodes', []):
             reason = exclusion_reason(node, source, cfg, cache.get('health', {}).get(node['name']))
             result.append({'id': node_id(node), 'source_id': source['id'],
@@ -405,9 +502,13 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
     active = [s for s in cfg['sources'] if s.get('enabled', True)]
     ids = sorted(s['id'] for s in active)
     for source in active:
+        if request_superseded(cfg):
+            return
         sid = source['id']
         path = STATE / f'{sid}.json'
-        cache = read_json(path, {'nodes': [], 'fetched': 0, 'attempted': 0, 'unhealthy': True})
+        cache = source_cache(source)
+        if source.get('subscription_type') == 'file' and read_json(path, {}).get('file_hash') != cache.get('file_hash'):
+            log_event('file_import', sid, count=len(cache['nodes']))
         selected = not publish_only and (source_id is None or source_id == sid)
         fingerprint = hashlib.sha256(json.dumps({k: v for k, v in source.items() if k not in ('name', 'website', 'excluded_nodes')}, sort_keys=True).encode()).hexdigest()
         changed = cache.get('source_hash') != fingerprint
@@ -419,14 +520,17 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
         if selected and not check_only and (force_fetch or due) and (force_fetch or now - cache.get('attempted', 0) >= cfg['retry_interval']):
             cache['attempted'] = now
             try:
+                log_event('file_import' if source.get('subscription_type') == 'file' else 'fetch_start', sid)
                 metadata = {}
                 candidate = fetch(source, metadata)
                 cache.update(metadata)
+                log_event('fetch_done', sid, count=len(candidate))
             except Exception as e:
                 error = type(e).__name__  # Never log URL, credentials, body or raw exception.
         good, accepted, measurements, measured = [], False, {}, False
         if candidate:
             try:
+                log_event('probe_start', sid, total=len(candidate))
                 good = probe(candidate, cfg, measurements)
                 measured = True
                 # A syntactically valid new subscription replaces the old one even if temporarily offline.
@@ -437,6 +541,7 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
         if selected and not accepted and cache['nodes']:
             try:
                 measurements = {}
+                log_event('probe_start', sid, total=len(cache['nodes']))
                 good = probe(cache['nodes'], cfg, measurements)
                 measured = True
             except Exception as e:
@@ -446,12 +551,16 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
             alive_names = {n['name'] for n in good}
             cache['health'] = {n['name']: n['name'] in alive_names for n in cache['nodes']}
             cache.update(delays=measurements, checked_at=time.time())
-        if selected:
+        if request_superseded(cfg):
+            return
+        if selected or source.get('subscription_type') == 'file':
             cache['last_error'] = error
             atomic(path, json.dumps(cache, ensure_ascii=False))
-        else:
+        if not selected:
             good = [n for n in cache['nodes'] if cache.get('health', {}).get(n['name'])]
             error = cache.get('last_error')
+        if selected or (source.get('subscription_type') == 'file' and changed):
+            log_event('source_failed' if error else 'source_done', sid, cached=len(cache['nodes']), healthy=len(good), error=error)
         healthy.extend(good)
         included = [n for n in cache['nodes'] if not exclusion_reason(n, source, cfg, cache.get('health', {}).get(n['name']))]
         published_nodes.extend(included)
@@ -480,7 +589,7 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
     status = {'checked_at': now, 'state': state, 'healthy': len(healthy),
               'published': len(published_nodes) if rules_ready else 0, 'sources': details}
     atomic(STATE / 'status.json', json.dumps(status, ensure_ascii=False, indent=2))
-    print(json.dumps(status, ensure_ascii=False), flush=True)
+    log_event('rules_pending' if not rules_ready else 'publish_done', published=status['published'], healthy=len(healthy))
 
 
 def run_once(last_consumed):
@@ -493,22 +602,31 @@ def run_once(last_consumed):
         interval = settings['health_interval']
         request = read_json(STATE / 'refresh.request', {})
         consumed = request.get('id')
+        settings['_request_id'] = consumed
         pending = bool(consumed) and consumed != last_consumed
         source_id = request.get('source_id') if pending else None
         publish_only = request.get('publish_only', False) if pending else False
         running.update(source_id=source_id, request_id=consumed)
         atomic(STATE / 'running.json', json.dumps(running))
-        rules_ready = update_rules(settings)
+        log_event('publish_start' if publish_only else 'task_start', source_id)
+        cached_rules = not settings.get('public_base_url') or all((PUBLIC / 'rules' / f).exists() for f in ('cn-domain.yaml', 'cn-ip.yaml'))
+        rules_ready = cached_rules if publish_only and cached_rules else update_rules(settings)
+        if not publish_only and any(s.get('subscription_type') == 'file' for s in settings['sources']):
+            cycle(settings, publish_only=True, rules_ready=rules_ready)
         force_fetch = request.get('fetch', False) and consumed != last_consumed
         check_only = bool(consumed) and consumed != last_consumed and not request.get('fetch', False)
         cycle(settings, force_fetch=force_fetch, check_only=check_only, rules_ready=rules_ready,
               source_id=source_id, publish_only=publish_only)
+        if request_superseded(settings):
+            log_event('task_superseded', source_id)
+            return interval, consumed
         if not rules_ready:
             raise ValueError('rules unavailable')
         running.update(last_success_at=time.time(), error=None)
+        log_event('task_done', source_id)
     except Exception as e:
         running.update(last_failure_at=time.time(), error=type(e).__name__)
-        print('cycle failed: ' + type(e).__name__, flush=True)
+        log_event('task_failed', error=type(e).__name__)
     finally:
         running['busy'] = False
         atomic(STATE / 'running.json', json.dumps(running))
@@ -517,6 +635,7 @@ def run_once(last_consumed):
 
 if __name__ == '__main__':
     os.umask(0o022)
+    log_event('service_started')
     last_consumed = None
     while True:
         interval, consumed = run_once(last_consumed)
