@@ -17,7 +17,7 @@ Fetch subscriptions from multiple providers in the background, cache each provid
 - **Keep temporarily unavailable nodes:** health checks do not remove nodes. A validated new subscription replaces its provider's previous list.
 - **Configurable country groups:** use node names and flags to create country / region test groups. Choose separate groups in a settings dialog and merge remaining nodes into Other countries, or disable grouping while keeping global AUTO.
 - **Traffic routing:** private networks, Chinese domains, and Chinese IP ranges connect directly; other traffic uses the proxy selection group. Chinese rules update periodically with a cached fallback.
-- **Visual dashboard:** faceted crystal branding with a midnight navy and cool teal palette. Water levels represent remaining traffic. Cards show quota, expiration, total / published / available node counts, and data timestamps, with drag sorting. Click a card to show Edit, Website, single-airport Update, and Check actions within its existing dimensions.
+- **Visual dashboard:** faceted crystal branding with a midnight navy and cool teal palette. Teal water levels represent remaining traffic; pale purple water levels show the healthy node ratio when both traffic and expiration information are absent. Cards show quota, expiration, total / published / available node counts, and data timestamps, with drag sorting. Click a card to show Edit, Website, single-airport Update, and Check actions within its existing dimensions.
 - **Subscription management:** edit display names, websites, subscription URLs, fetch proxies, client headers, and enabled states in a dialog. Trigger updates or health checks manually.
 - **Node management:** safe details and last measured delays, combined filters, bulk exclusion / restoration, persistent rules, and a bounded scrolling table.
 - **Proxy fetching:** supports HTTP, HTTPS, SOCKS5, and SOCKS5H proxies.
@@ -188,7 +188,9 @@ Use rule mode in the client. Publishing requires at least one cached node. If th
 
 - Click a card to reveal Edit and Visit Website. Click another card, click outside, or press Esc to collapse it.
 - Edit provider names, websites, URLs, proxies, and enabled states in the dialog. Existing IDs are read-only.
-- Water levels equal remaining traffic divided by total quota, using the upstream `subscription-userinfo` response header. Missing data is never represented as a fabricated percentage.
+- By default, teal water levels equal remaining traffic divided by total quota, using the upstream `subscription-userinfo` response header.
+- Only when both traffic and expiration information are absent, pale purple water levels show healthy nodes divided by total nodes, labeled “Healthy node ratio”. Total, published, and healthy counts appear as three large numbers; missing traffic, expiration, and subscription update timestamps are hidden. Healthy counts reflect the latest server checks.
+- If there are no nodes or the healthy count is unknown, node water levels and percentages are hidden. A known healthy count of zero displays 0%. Any existing traffic or expiration information keeps the original presentation instead of switching to the node ratio.
 - Disabled providers are marked red and retain their last cached information. Disabling removes their nodes from the shared subscription without deleting the cache.
 - Update All fetches subscriptions and checks nodes. Check Nodes Only uses existing caches.
 - Quota and expiration values reflect the latest successful fetch, not a live account balance; consult their timestamps.

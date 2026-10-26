@@ -103,3 +103,43 @@ assert.ok(logContext.logLine({time:1,service:'worker',source_id:'sanyuan',event:
 assert.ok(logContext.logLine({time:1,service:'worker',event:'task_failed',error:'ValueError'}).endsWith('任务失败 · ValueError'));
 for(const key of Object.values(messages)){assert.ok(Object.hasOwn(JSON.parse(fs.readFileSync('panel-i18n.js','utf8').match(/const en = (\{[\s\S]*?\n\});/)[1]),key),key)}
 console.log('Log progress rendering and translation tests passed');
+
+// Node water is a fallback only when both traffic and expiry are absent.
+let cardData;
+const cardFields = {};
+const cardClasses = new Set();
+const card = {
+  classList: {toggle: (key, on) => on ? cardClasses.add(key) : cardClasses.delete(key)},
+  style: {setProperty: (key, value) => {cardFields[key] = value;}},
+  querySelector: key => cardFields[key] ||= {},
+};
+const cardContext = vm.createContext({airportData: () => cardData, t: key => key, bytes: context.bytes, date: context.date});
+vm.runInContext(script.split('\n').find(line => line.startsWith('function cardUpdate(')), cardContext);
+function updateCard(data, source = {}) {cardData = data; cardContext.cardUpdate(card, {id:'test', ...source});}
+updateCard({cached:100, healthy:75, published:80});
+assert.ok(cardClasses.has('node-mode'));
+assert.equal(cardFields['--level'], '75%');
+assert.equal(cardFields['.percent'].textContent, '75%');
+assert.equal(cardFields['.traffic'].textContent, '可用节点占比');
+assert.equal(cardFields['.healthy-count'].textContent, 75);
+assert.equal(cardFields['.expiry'].hidden, true);
+updateCard({cached:100, healthy:0});
+assert.equal(cardFields['--level'], '0%');
+assert.equal(cardFields['.balance'].hidden, false);
+for (const data of [{cached:0,healthy:0}, {cached:100,healthy:null}]) {
+  updateCard(data);
+  assert.equal(cardFields['.balance'].hidden, true);
+}
+for (const info of [{expires_at:123}, {remaining_bytes:0}, {total_bytes:100}]) {
+  updateCard({cached:100,healthy:75,subscription_info:info});
+  assert.ok(!cardClasses.has('node-mode'));
+  assert.equal(cardFields['.node-metrics'].hidden, true);
+}
+updateCard({cached:100,healthy:75,subscription_info:{total_bytes:100,remaining_bytes:20}});
+assert.equal(cardFields['--level'], '20%');
+assert.equal(cardFields['.balance'].hidden, false);
+assert.equal(cardFields['.expiry'].hidden, false);
+updateCard({cached:100,healthy:75,published:80}, {enabled:false});
+assert.equal(cardFields['.published-count'].textContent, 0);
+assert.ok(cardClasses.has('disabled'));
+console.log('Card node water fallback tests passed');

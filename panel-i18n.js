@@ -1,6 +1,9 @@
 /* UI translations only. Config values and subscription group names remain unchanged. */
 const PanelI18n = (() => {
   const en = {
+  "可用节点占比": "Healthy node ratio",
+  "总节点": "Total nodes",
+  "已发布": "Published",
   "日志": "Logs",
   "运行日志": "Runtime logs",
   "worker / panel 应用容器日志，每 2 秒刷新；仅保留最近 200 条，已隐藏订阅和节点凭证。": "Worker / panel application container logs, refreshed every 2 seconds. Shows the latest 200 entries without subscription or node credentials.",
