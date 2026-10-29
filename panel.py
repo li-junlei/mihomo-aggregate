@@ -63,7 +63,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/config':
             with LOCK:
                 text = worker.CONFIG.read_bytes()
-            self.respond(200, json.dumps({'config': worker.validate_config(yaml.safe_load(text)),
+            cfg = worker.validate_config(yaml.safe_load(text))
+            if 'email' in cfg:
+                cfg['email'].pop('password', None)
+            self.respond(200, json.dumps({'config': cfg,
                                          'version': hashlib.sha256(text).hexdigest(),
                                          'countries': sorted({n['country'] for n in worker.node_details(worker.load_config())
                                                               if n['enabled'] and n['country'] != '🌐 其他地区'}),
@@ -103,6 +106,8 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     cfg = worker.validate_config(data.get('config'))
                     old = worker.load_config()
+                    if 'email' in cfg and 'password' not in cfg['email']:
+                        cfg['email']['password'] = old.get('email', {}).get('password', '')
                     old_sources = {s['id']: {k: v for k, v in s.items() if k != 'excluded_nodes'}
                                    for s in old['sources']}
                     publish_only = all(old_sources.get(s['id']) == {k: v for k, v in s.items() if k != 'excluded_nodes'}

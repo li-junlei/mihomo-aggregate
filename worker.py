@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 import re
 import secrets
+import smtplib
+import ssl
+from email.message import EmailMessage
 import subprocess
 import tempfile
 import time
@@ -351,6 +354,54 @@ def probe(nodes, cfg, measurements=None):
             session.close()
 
 
+def validate_email(settings):
+    if not isinstance(settings, dict) or not isinstance(settings.get('enabled', False), bool):
+        raise ValueError('invalid email settings')
+    for key in ('host', 'username', 'password', 'sender', 'recipient'):
+        value = settings.get(key, '')
+        if not isinstance(value, str) or len(value) > 1024 or (key != 'password' and any(c in value for c in '\r\n')):
+            raise ValueError('invalid email field')
+    if type(settings.get('port', 465)) is not int or not 1 <= settings.get('port', 465) <= 65535:
+        raise ValueError('invalid SMTP port')
+    if settings.get('security', 'ssl') not in ('ssl', 'starttls'):
+        raise ValueError('SMTP requires TLS')
+    if settings.get('enabled'):
+        if not settings.get('host', '').strip():
+            raise ValueError('SMTP host required')
+        for key in ('sender', 'recipient'):
+            if not re.fullmatch(r'[^\s@<>,;]+@[^\s@<>,;]+', settings.get(key, '')):
+                raise ValueError('invalid email address')
+    return settings
+
+
+def notify_outage(source, cache, cfg, good):
+    if good:
+        cache.pop('outage_notified', None)
+        return
+    settings = cfg.get('email', {})
+    if not cache['nodes'] or cache.get('outage_notified') or not settings.get('enabled'):
+        return
+    try:
+        message = EmailMessage()
+        message['Subject'] = '机场节点全部失效通知'
+        message['From'] = settings['sender']
+        message['To'] = settings['recipient']
+        message.set_content(f"机场：{source.get('name') or source['id']}\n全部 {len(cache['nodes'])} 个节点检测失败。\n检测时间（UTC）：{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(cache['checked_at']))}\n请检查机场服务及检测服务器网络。")
+        context = ssl.create_default_context()
+        transport = smtplib.SMTP_SSL if settings.get('security', 'ssl') == 'ssl' else smtplib.SMTP
+        options = {'context': context} if transport is smtplib.SMTP_SSL else {}
+        with transport(settings['host'], settings.get('port', 465), timeout=15, **options) as smtp:
+            if settings.get('security') == 'starttls':
+                smtp.starttls(context=context)
+            if settings.get('username'):
+                smtp.login(settings['username'], settings.get('password', ''))
+            smtp.send_message(message)
+        cache['outage_notified'] = True
+        log_event('email_sent', source['id'])
+    except Exception as error:
+        log_event('email_failed', source['id'], error=type(error).__name__)
+
+
 def load_config():
     cfg = yaml.safe_load(CONFIG.read_text('utf-8'))
     return validate_config(cfg)
@@ -361,6 +412,7 @@ def validate_config(cfg):
         raise ValueError('配置格式无效，最多 30 个机场')
     if not isinstance(cfg.get('group_by_country', True), bool):
         raise ValueError('group_by_country must be boolean')
+    validate_email(cfg.get('email', {}))
     selected = cfg.get('country_groups')
     if selected is not None and (not isinstance(selected, list) or len(selected) > 250 or
                                 any(not isinstance(v, str) or len(v) > 80 or country(v) != v or
@@ -553,6 +605,8 @@ def cycle(cfg, force_fetch=False, check_only=False, rules_ready=True, source_id=
             cache.update(delays=measurements, checked_at=time.time())
         if request_superseded(cfg):
             return
+        if measured:
+            notify_outage(source, cache, cfg, good)
         if selected or source.get('subscription_type') == 'file':
             cache['last_error'] = error
             atomic(path, json.dumps(cache, ensure_ascii=False))

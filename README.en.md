@@ -346,3 +346,7 @@ Tests cover cache retention, node replacement, selective country groups, cached 
 | `test_worker.py` / `test_panel.py` | Automated tests |
 
 Automated tests also cover file subscriptions, scoped saves, yielding to new requests, immediate import and cached publication, log sanitization/rotation/limits/authentication, and progress messages. The log endpoint uses the panel authentication settings. Configuration writes have a 32 MiB request limit; other write endpoints retain the 4 MiB limit.
+
+### Email notifications
+
+Configure SMTP host, port, TLS or STARTTLS, username, password and sender/recipient under Settings, then enable notifications. Leave the password blank to retain it; the configuration API never returns it. Each enabled provider sends one email when a complete check finds all its nodes offline, including the first check. Recovery of any node rearms the alert. The deduplication state persists in the provider cache across restarts. Probe errors, empty caches and publication-only jobs do not trigger alerts. Delivery failures are logged without credentials and retried after the next complete check. Emails contain only the provider name, node count and check time. SMTP settings are stored in the private configuration file.

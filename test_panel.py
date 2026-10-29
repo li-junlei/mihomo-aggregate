@@ -58,6 +58,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(kind, 'text/javascript; charset=utf-8')
         self.assertEqual(self.request('/../panel-i18n.js')[0], 404)
 
+    def test_email_password_is_write_only_and_preserved(self):
+        _, current = self.request('/api/config')
+        current['config']['email'] = dict(enabled=True, host='smtp.example.com', port=465,
+                                         sender='from@example.com', recipient='to@example.com',
+                                         password='smtp-secret')
+        self.assertEqual(self.request('/api/config', current)[0], 200)
+        _, current = self.request('/api/config')
+        self.assertNotIn('password', current['config']['email'])
+        self.assertNotIn('smtp-secret', json.dumps(current))
+        current['config']['email']['port'] = 587
+        self.assertEqual(self.request('/api/config', current)[0], 200)
+        self.assertEqual(panel.worker.load_config()['email']['password'], 'smtp-secret')
+
     def test_rule_switches_persist_without_refetch(self):
         _, current = self.request('/api/config')
         current['config']['exclude_unhealthy'] = True

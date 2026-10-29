@@ -143,3 +143,23 @@ updateCard({cached:100,healthy:75,published:80}, {enabled:false});
 assert.equal(cardFields['.published-count'].textContent, 0);
 assert.ok(cardClasses.has('disabled'));
 console.log('Card node water fallback tests passed');
+
+(async()=>{
+  const fields = Object.fromEntries(['saveEmail','emailEnabled','email_host','email_port','email_security','email_username','email_password','email_sender','email_recipient'].map(id=>[id,{value:''}]));
+  Object.assign(fields.emailEnabled,{checked:true});
+  for(const [key,value] of Object.entries({host:'smtp.example.com',port:'587',security:'starttls',username:'user',password:'secret',sender:'from@example.com',recipient:'to@example.com'}))fields['email_'+key].value=value;
+  let savedEmail;
+  const emailCfg={sources:[]};
+  const emailContext=vm.createContext({cfg:emailCfg,$:id=>fields[id],structuredClone,notice:message=>{throw Error(message)},saveConfig:async next=>{savedEmail=structuredClone(next);emailContext.cfg=next}});
+  vm.runInContext(script.split('\n').find(line=>line.startsWith("$('saveEmail').onclick=")),emailContext);
+  await fields.saveEmail.onclick();
+  assert.equal(savedEmail.email.password,'secret');
+  assert.equal(savedEmail.email.port,587);
+  assert.equal(savedEmail.email.security,'starttls');
+  assert.equal(emailContext.cfg.email.password,undefined);
+  assert.equal(fields.email_password.value,'');
+  await fields.saveEmail.onclick();
+  assert.equal(Object.hasOwn(savedEmail.email,'password'),false);
+  assert.equal(fields.saveEmail.disabled,false);
+  console.log('Email settings save and password retention UI tests passed');
+})().catch(error=>{console.error(error);process.exitCode=1});

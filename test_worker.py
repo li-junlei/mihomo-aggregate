@@ -26,6 +26,52 @@ class CacheTests(unittest.TestCase):
         self.nodes = worker.parse_nodes('proxies:\n- name: test\n  type: ss\n  server: example.com\n  port: 443\n  cipher: aes-128-gcm\n  password: secret\n', 'a')
         self.fetch.return_value = self.nodes
 
+    def test_email_outage_dedup_recovery_retry_and_publish_only(self):
+        self.cfg['sources'] = self.cfg['sources'][:1]
+        self.cfg['email'] = dict(enabled=True, host='smtp.example.com', port=465,
+                                 sender='from@example.com', recipient='to@example.com',
+                                 username='user', password='private-password')
+        with patch.object(worker.smtplib, 'SMTP_SSL') as transport:
+            smtp = transport.return_value.__enter__.return_value
+            self.probe.side_effect = lambda nodes, cfg, measurements=None: []
+            worker.cycle(self.cfg)
+            worker.cycle(self.cfg)
+            smtp.send_message.assert_called_once()
+            worker.cycle(self.cfg, publish_only=True)
+            smtp.send_message.assert_called_once()
+            self.probe.side_effect = lambda nodes, cfg, measurements=None: nodes
+            worker.cycle(self.cfg)
+            self.probe.side_effect = RuntimeError('probe failed')
+            worker.cycle(self.cfg)
+            smtp.send_message.assert_called_once()
+            self.probe.side_effect = lambda nodes, cfg, measurements=None: []
+            smtp.send_message.side_effect = RuntimeError('private server error')
+            worker.cycle(self.cfg)
+            self.assertNotIn('private server error', (worker.STATE/'worker.log').read_text())
+            smtp.send_message.side_effect = None
+            worker.cycle(self.cfg)
+            self.assertEqual(smtp.send_message.call_count, 3)
+            worker.cycle(self.cfg)
+            self.assertEqual(smtp.send_message.call_count, 3)
+            message = smtp.send_message.call_args.args[0]
+            self.assertNotIn('private-password', message.as_string())
+
+    def test_email_validation_and_starttls(self):
+        for settings in [None, {'enabled': 'yes'}, {'port': True}, {'port': 0},
+                         {'security': 'plain'}, {'host': 'bad\r\nheader'},
+                         {'enabled': True, 'host': 'smtp', 'sender': 'bad', 'recipient': 'to@example.com'}]:
+            with self.assertRaises(ValueError):
+                worker.validate_email(settings)
+        cfg = {'email': dict(enabled=True, host='smtp.example.com', port=587, security='starttls',
+                             sender='from@example.com', recipient='to@example.com')}
+        cache = {'nodes': self.nodes, 'checked_at': 1000000}
+        with patch.object(worker.smtplib, 'SMTP') as transport:
+            worker.notify_outage({'id': 'a'}, cache, cfg, [])
+            smtp = transport.return_value.__enter__.return_value
+            smtp.starttls.assert_called_once()
+            smtp.send_message.assert_called_once()
+            self.assertTrue(cache['outage_notified'])
+
     def status(self):
         return json.loads((worker.STATE / 'status.json').read_text())
 

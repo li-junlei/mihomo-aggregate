@@ -12,6 +12,16 @@ exclude_unhealthy: false
 # Rules accept enabled: false to pause without deleting their conditions.
 exclude_rules: []
 # Copy to sources.yaml; edit through the authenticated LAN management panel.
+# SMTP password is write-only in the panel API. Use a mailbox app password.
+email:
+  enabled: false
+  host: ""
+  port: 465
+  security: ssl # ssl or starttls; TLS certificate verification is required
+  username: ""
+  password: ""
+  sender: ""
+  recipient: ""
 health_interval: 600
 fetch_interval: 3600
 retry_interval: 900

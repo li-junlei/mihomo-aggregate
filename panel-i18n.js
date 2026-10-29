@@ -1,6 +1,20 @@
 /* UI translations only. Config values and subscription group names remain unchanged. */
 const PanelI18n = (() => {
   const en = {
+  "邮件通知": "Email notifications",
+  "启用邮件通知": "Enable email notifications",
+  "SMTP 服务器": "SMTP server",
+  "端口": "Port",
+  "加密方式": "Encryption",
+  "SMTP 账号": "SMTP username",
+  "SMTP 授权码（留空保留）": "SMTP password (leave blank to keep)",
+  "发件邮箱": "Sender email",
+  "收件邮箱": "Recipient email",
+  "保存邮件配置": "Save email settings",
+  "完整检测确认机场全部节点失效时通知一次，恢复后重新启用通知；发送失败会在下次检测重试。": "Notify once when a complete check finds all provider nodes offline. Recovery rearms notifications; failed delivery retries on the next check.",
+  "邮件发送成功": "Email sent",
+  "邮件发送失败": "Email delivery failed",
+
   "可用节点占比": "Healthy node ratio",
   "总节点": "Total nodes",
   "已发布": "Published",
